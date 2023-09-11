@@ -1,70 +1,88 @@
 import tkinter as tkn
 import cv2
+from keras.models import model_from_json
 from PIL import Image, ImageTk
 import datetime
 import os
+import numpy as np
 
-# Video codec and recording filename
+json_file = open('./model/emotion_model.json', 'r')
+loaded_model_json = json_file.read()
+json_file.close()
+emotion_model = model_from_json(loaded_model_json)
+
+emotion_model.load_weights("./model/emotion_model.h5")
+print("Loaded model from disk")
+
+# video codec and recording filename
 video_codec = cv2.VideoWriter_fourcc(*"XVID")
 filename = "recs/camera_feed_recording.mp4"
 
-# Create the "recs" folder if it doesn't exist
+# create the "recs" folder if it doesn't exist
 if not os.path.exists("recs"):
     os.mkdir("recs")
 
-# Initialize the capture variable as None
+# initialize the capture variable as None
 cap = None
 out = None
 recording = False
 
+emotion_dict = {0: "Angry", 1: "Disgusted", 2: "Fearful",
+                3: "Happy", 4: "Neutral", 5: "Sad", 6: "Surprised"}
 
-def set_filename(name):
-    global filename
-    filename = "recs/camera_feed_"+name+".mp4"
+# initialize the emotion_job variable to keep track of the emotion detection update
+emotion_job = None
 
 
-def update_cam_view():
-    global cap, out, recording
+def start_camera():
+    global cap, emotion_job
+    # release any existing capture
+    if cap is not None:
+        cap.release()
+    # initialize the capture, turning on the camera
+    cap = cv2.VideoCapture(0)
+    # start the emotion detection process
+    emotion_job = window.after(5, perform_emotion_detection)
+
+
+def perform_emotion_detection():
+    global cap, emotion_job, emotions
     if cap is not None:
         ret, frame = cap.read()
         if ret:
+            # perform emotion detection on the frame here
+            face_detector = cv2.CascadeClassifier('./haarcascades/haarcascade_frontalface_default.xml')
+            gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            num_faces = face_detector.detectMultiScale(gray_frame, scaleFactor=1.3, minNeighbors=5)
+            for (x, y, w, h) in num_faces:
+                cv2.rectangle(frame, (x, y-50), (x+w, y+h+10), (0, 255, 0), 4)
+                roi_gray_frame = gray_frame[y:y + h, x:x + w]
+                cropped_img = np.expand_dims(np.expand_dims(cv2.resize(roi_gray_frame, (48, 48)), -1), 0)
+
+                # predict the emotions
+                emotion_prediction = emotion_model.predict(cropped_img)
+                maxindex = int(np.argmax(emotion_prediction))
+                cv2.putText(frame, emotion_dict[maxindex], (x+5, y-20),
+                            cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2, cv2.LINE_AA)
+
+            # update the camera feed with the processed frame
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             img = Image.fromarray(frame_rgb)
             imgtk = ImageTk.PhotoImage(image=img)
             camera.imgtk = imgtk
             camera.config(image=imgtk)
             if recording and out is not None:
-                # Write frame to the video file
+                # write frame to the video file
                 out.write(frame)
-        # Continue updating the camera feed even if not recording
-        camera.after(10, update_cam_view)
-    else:
-        camera.after(10, update_cam_view)
-
-
-def start_camera():
-    global cap
-    # Release any existing capture
-    if cap is not None:
-        cap.release()
-    # Initialize the capture
-    cap = cv2.VideoCapture(0)
-    update_cam_view()
-
-
-def start_recording():
-    global cap, out, recording
-    if cap is not None:
-        recording = True
-        width = int(cap.get(3))
-        height = int(cap.get(4))
-        set_filename(customer_name_input.get())
-        out = cv2.VideoWriter(filename, video_codec, 20, (width, height))
-        print("Recording started:", filename)
+            # schedule the next emotion detection update
+            emotion_job = window.after(5, perform_emotion_detection)
+        else:
+            # If capturing is finished, stop the emotion detection
+            stop_camera()
 
 
 def stop_camera():
-    global cap, out, recording
+    global cap, out, emotion_job
     if cap is not None:
         # Stop recording before stopping the camera
         if out is not None:
@@ -72,16 +90,13 @@ def stop_camera():
             out = None
             print("Recording saved:", filename)
             print("Saving file...")
-            # Add a delay to allow the camera to release
-            camera.after(100, save_cam_feed)
-
-
-def save_cam_feed():
-    global cap
-    if cap is not None:
+        # Stop the emotion detection update loop
+        if emotion_job is not None:
+            window.after_cancel(emotion_job)
+            emotion_job = None
         # Release the camera
-        # cap.release()
-        # cap = None
+        cap.release()
+        cap = None
         # Clear the camera feed
         camera.config(image='')
         print("Camera feed stopped")
@@ -95,7 +110,7 @@ def update_datetime():
 
 
 def main():
-    global camera, cap, datetime_label, customer_name_input
+    global camera, cap, datetime_label, customer_name_input, window
     window = tkn.Tk()
     window.geometry("1200x900")
     window.title("Cashier Side Application")
@@ -105,7 +120,7 @@ def main():
         window, text="Cashier Desk Portal - Emotion Detection", font=("Helvetica", 28, "bold"))
     heading_label.grid(row=0, column=0, padx=10, pady=10, columnspan=2)
 
-    # Create a container frame to hold the left and right containers
+    # create a container frame to hold the left and right containers
     outer_container = tkn.Frame(
         window, padx=10, pady=10, bg="#2D2B2B",
     )
@@ -166,7 +181,7 @@ def main():
 
     # Buttons to start and stop camera feed
     start_button = tkn.Button(left_container, text="Start Feed", font=(
-        "Helvetica", 14), command=start_recording)
+        "Helvetica", 14), command=start_camera)
     start_button.grid(row=4, column=0, padx=10, pady=5, sticky='w')
 
     stop_button = tkn.Button(left_container, text="Stop Feed", font=(
@@ -177,9 +192,7 @@ def main():
     datetime_label.grid(row=0, column=1, padx=10, pady=10, sticky="ne")
     update_datetime()
 
-    # Start the GUI app
-    start_camera()
-
+    # start the GUI app
     window.mainloop()
 
 
