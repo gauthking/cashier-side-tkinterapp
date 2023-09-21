@@ -6,6 +6,14 @@ import datetime
 import os
 import numpy as np
 
+import firebase_admin
+from firebase_admin import firestore
+from firebase_admin import credentials
+
+cred = credentials.Certificate('./sensorsprok-firebase-adminsdk-8lypo-862938d9d5.json')
+app = firebase_admin.initialize_app(cred)
+db = firestore.client()
+
 json_file = open('./model/emotion_model.json', 'r')
 loaded_model_json = json_file.read()
 json_file.close()
@@ -32,6 +40,12 @@ emotion_dict = {0: "Angry", 1: "Disgusted", 2: "Fearful",
 
 # initialize the emotion_job variable to keep track of the emotion detection update
 emotion_job = None
+emotions_detected_list = [] 
+
+employee_id = None
+customer_id = None
+customer_name = None
+customer_gender = None
 
 
 def start_camera():
@@ -46,7 +60,7 @@ def start_camera():
 
 
 def perform_emotion_detection():
-    global cap, emotion_job, emotions
+    global cap, emotion_job, emotions,emotions_detected_list
     if cap is not None:
         ret, frame = cap.read()
         if ret:
@@ -58,12 +72,15 @@ def perform_emotion_detection():
                 cv2.rectangle(frame, (x, y-50), (x+w, y+h+10), (0, 255, 0), 4)
                 roi_gray_frame = gray_frame[y:y + h, x:x + w]
                 cropped_img = np.expand_dims(np.expand_dims(cv2.resize(roi_gray_frame, (48, 48)), -1), 0)
-
+                
                 # predict the emotions
                 emotion_prediction = emotion_model.predict(cropped_img)
                 maxindex = int(np.argmax(emotion_prediction))
                 cv2.putText(frame, emotion_dict[maxindex], (x+5, y-20),
                             cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2, cv2.LINE_AA)
+                print(emotion_dict[maxindex])
+                emotions_detected_list.append(emotion_dict[maxindex])
+
 
             # update the camera feed with the processed frame
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -80,9 +97,17 @@ def perform_emotion_detection():
             # If capturing is finished, stop the emotion detection
             stop_camera()
 
+def get_input_values():
+    global employee_id, customer_id, customer_name, customer_gender
+    employee_id = cashier_id_input.get()
+    customer_id = customer_id_input.get()
+    customer_name = customer_name_input.get()
+    customer_gender = customer_gender_input.get()
+
+
 
 def stop_camera():
-    global cap, out, emotion_job
+    global cap, out, emotion_job,emotions_detected_list
     if cap is not None:
         # Stop recording before stopping the camera
         if out is not None:
@@ -100,8 +125,14 @@ def stop_camera():
         # Clear the camera feed
         camera.config(image='')
         print("Camera feed stopped")
+        print(emotions_detected_list)
+        get_input_values()
+        print(f"Customer Name: {customer_name}")
 
-
+        data = {"Cashier-id":employee_id ,"Customer-name":customer_name, "emotion-data":emotions_detected_list }
+        doc_id = customer_name+"_emotionData"
+        db.collection("customer-satisfaction-data").document(doc_id).set(data)
+        emotions_detected_list=[]
 def update_datetime():
     now = datetime.datetime.now()
     date_str = now.strftime("%Y-%m-%d %H:%M:%S")
@@ -110,7 +141,7 @@ def update_datetime():
 
 
 def main():
-    global camera, cap, datetime_label, customer_name_input, window
+    global camera, cap, datetime_label, customer_name_input, window, customer_gender_input,customer_id_input,cashier_id_input
     window = tkn.Tk()
     window.geometry("1200x900")
     window.title("Cashier Side Application")
