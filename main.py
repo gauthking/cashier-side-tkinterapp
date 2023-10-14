@@ -3,6 +3,7 @@ import cv2
 from keras.models import model_from_json
 from PIL import Image, ImageTk
 import datetime
+
 import os
 import numpy as np
 
@@ -128,17 +129,28 @@ def stop_camera():
         print(emotions_detected_list)
         get_input_values()
         print(f"Customer Name: {customer_name}")
+        
+        date = get_date()
 
-        data = {"Cashier-id":employee_id ,"Customer-name":customer_name, "emotion-data":emotions_detected_list }
+        data1 = {"customer-id":customer_id,"Customer-name":customer_name}
         doc_id = customer_name+"_emotionData"
-        db.collection("customer-satisfaction-data").document(doc_id).set(data)
+        db.collection("customer-satisfaction-data").document(doc_id).set(data1)
+
+        data2 = {'Cashier-id': employee_id, 'emotion-data':emotions_detected_list }
+        db.collection('customer-satisfaction-data').document(doc_id).collection('datewise').document(date).set(data2)
+
         emotions_detected_list=[]
+
 def update_datetime():
     now = datetime.datetime.now()
     date_str = now.strftime("%Y-%m-%d %H:%M:%S")
     datetime_label.config(text=date_str)
     datetime_label.after(1000, update_datetime)
 
+def get_date():
+    now = datetime.datetime.now()
+    datetime_str = now.strftime("%Y-%m-%d %H:%M:%S")
+    return datetime_str[0:10]
 
 def main():
     global camera, cap, datetime_label, customer_name_input, window, customer_gender_input,customer_id_input,cashier_id_input
