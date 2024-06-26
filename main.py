@@ -1,31 +1,38 @@
+import os
+import sys
 import tkinter as tk
 from tkinter import messagebox
 import cv2
 from keras.models import model_from_json
 from PIL import Image, ImageTk
 import datetime
-import os
 import numpy as np
 import firebase_admin
 from firebase_admin import firestore
 from firebase_admin import credentials
 
-cred = credentials.Certificate('./sensorsprok-firebase-adminsdk-8lypo-862938d9d5.json')
+def resource_path(relative_path):
+    """ Get the absolute path to the resource, works for dev and for PyInstaller """
+    try:
+        # PyInstaller creates a temp folder and stores the path in _MEIPASS
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+
+    return os.path.join(base_path, relative_path)
+
+cred = credentials.Certificate(resource_path('sensorsprok-firebase-adminsdk-8lypo-862938d9d5.json'))
 app = firebase_admin.initialize_app(cred)
 db = firestore.client()
 
-json_file = open('./model/emotion_model.json', 'r')
+json_file = open(resource_path('model/emotion_model.json'), 'r')
 loaded_model_json = json_file.read()
 json_file.close()
 emotion_model = model_from_json(loaded_model_json)
-emotion_model.load_weights("./model/emotion_model.h5")
+emotion_model.load_weights(resource_path("model/emotion_model.h5"))
 print("Loaded model from disk")
 
 video_codec = cv2.VideoWriter_fourcc(*"XVID")
-filename = "recs/camera_feed_recording.mp4"
-
-if not os.path.exists("recs"):
-    os.mkdir("recs")
 
 cap = None
 out = None
@@ -38,7 +45,8 @@ employee_id = None
 customer_id = None
 customer_name = None
 customer_gender = None
-camera_var = None  # Define camera_var globally
+camera_var = None  
+store_id = None
 
 def get_available_cameras():
     available_cameras = []
@@ -67,7 +75,6 @@ def start_camera():
 
     cap = cv2.VideoCapture(camera_index)
     
-    # Additional check to ensure the camera is functioning
     if not cap.isOpened():
         tk.messagebox.showerror("Error", "Failed to open the selected camera.")
         return
@@ -85,7 +92,8 @@ def perform_emotion_detection():
     if cap is not None:
         ret, frame = cap.read()
         if ret:
-            face_detector = cv2.CascadeClassifier('./haarcascades/haarcascade_frontalface_default.xml')
+            face_cascade_path = resource_path('haarcascades/haarcascade_frontalface_default.xml')
+            face_detector = cv2.CascadeClassifier(face_cascade_path)
             gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             num_faces = face_detector.detectMultiScale(gray_frame, scaleFactor=1.3, minNeighbors=5)
             for (x, y, w, h) in num_faces:
@@ -155,7 +163,7 @@ def stop_camera():
                 date = get_date()
                 doc_id = customer_id+"_emotionData"
 
-                datewise_doc_ref = db.collection("customer-satisfaction-data").document(doc_id).collection("datewise").document(date)
+                datewise_doc_ref = db.collection("customer-satisfaction-data").document(store_id).collection("emotion_db").document(doc_id).collection("datewise").document(date)
                 datewise_doc = datewise_doc_ref.get()
 
                 if datewise_doc.exists:
@@ -164,14 +172,16 @@ def stop_camera():
                 else:
                     updated_emotion_data = emotions_detected_list
 
-                data1 = {"customer-id": customer_id, "Customer-name": customer_name}
-                data2 = {'Cashier-id': employee_id, 'emotion-data': updated_emotion_data}
+                data1 = {"customer-id": customer_id, "customer-name": customer_name, "customer-gender":customer_gender}
+                data2 = {'cashier-id': employee_id, 'emotion-data': updated_emotion_data}
 
-                db.collection("customer-satisfaction-data").document(doc_id).set(data1)
+                db.collection("customer-satisfaction-data").document(store_id).collection("emotion_db").document(doc_id).set(data1)
                 datewise_doc_ref.set(data2)
 
                 print("posted data successfully into firestore")
+                tk.messagebox.showinfo("Success", "Saved Data into Db successfully!")
             except Exception as e:
+                tk.messagebox.showerror("Error", "An error occured while posting data to Firestore, please make sure the system is connected to Internet Connection")
                 print("An error occurred while posting to firestore - ", e)
             
 
@@ -183,12 +193,12 @@ def update_datetime():
     datetime_label.config(text=date_str)
     datetime_label.after(1000, update_datetime)
 
-def get_date():
+def get_date(): 
     now = datetime.datetime.now()
     datetime_str = now.strftime("%Y-%m-%d %H:%M:%S")
     return datetime_str[0:10]
 
-def main():
+def show_main_window():
     global camera, cap, datetime_label, customer_name_input, window, customer_gender_input, customer_id_input, cashier_id_input, camera_var
     window = tk.Tk()
     window.geometry("1200x900")
@@ -272,5 +282,30 @@ def main():
 
     window.mainloop()
 
+def prompt_access_key():
+    login_window = tk.Tk()
+    login_window.title("Access Key Required")
+    login_window.geometry("500x350")
+    def check_access_key():
+        global store_id
+        access_key = access_key_entry.get()
+        store_id = store_id_entry.get()
+        if access_key == "cs351":  
+            login_window.destroy()
+            show_main_window()
+        else:
+            messagebox.showerror("Invalid Access Key", "The access key you entered is invalid. Please try again.")
+            access_key_entry.delete(0, tk.END)
+
+    tk.Label(login_window, text="Enter Store ID:", font=("Helvetica", 14)).pack(pady=10)
+    store_id_entry = tk.Entry(login_window, font=("Helvetica", 14))
+    store_id_entry.pack(pady=5)
+    tk.Label(login_window, text="Enter Access Key:", font=("Helvetica", 14)).pack(pady=10)
+    access_key_entry = tk.Entry(login_window, show="*", font=("Helvetica", 14))
+    access_key_entry.pack(pady=5)
+    tk.Button(login_window, text="Submit", font=("Helvetica", 14), command=check_access_key).pack(pady=10)
+
+    login_window.mainloop()
+
 if __name__ == "__main__":
-    main()
+    prompt_access_key()

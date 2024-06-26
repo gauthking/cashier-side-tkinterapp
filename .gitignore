@@ -3,4 +3,6 @@ __pycache__/
 *.pyc
 sensorsprok-firebase-adminsdk-8lypo-862938d9d5.json
 recs
-
+main.spec
+build
+dist
