@@ -146,8 +146,8 @@ def stop_camera():
         if out is not None:
             out.release()
             out = None
-            print("Recording saved:", filename)
-            print("Saving file...")
+            # print("Recording saved:", filename)
+            # print("Saving file...")
         if emotion_job is not None:
             window.after_cancel(emotion_job)
             emotion_job = None
@@ -158,12 +158,17 @@ def stop_camera():
         print(emotions_detected_list)
         get_input_values()
         print(f"Customer ID: {customer_id}")
-        if len(emotions_detected_list)!=0:
-            try:            
+        if len(emotions_detected_list) != 0:
+            try:
                 date = get_date()
-                doc_id = customer_id+"_emotionData"
+                doc_id = customer_id + "_emotionData"
 
-                datewise_doc_ref = db.collection("customer-satisfaction-data").document(store_id).collection("emotion_db").document(doc_id).collection("datewise").document(date)
+                doc_ref = db.collection("customer-satisfaction-data").document(store_id)
+                
+                dummy_data = {"initialized": True}
+                doc_ref.set(dummy_data)
+
+                datewise_doc_ref = doc_ref.collection("emotion_db").document(doc_id).collection("datewise").document(date)
                 datewise_doc = datewise_doc_ref.get()
 
                 if datewise_doc.exists:
@@ -172,20 +177,20 @@ def stop_camera():
                 else:
                     updated_emotion_data = emotions_detected_list
 
-                data1 = {"customer-id": customer_id, "customer-name": customer_name, "customer-gender":customer_gender}
+                data1 = {"customer-id": customer_id, "customer-name": customer_name, "customer-gender": customer_gender}
                 data2 = {'cashier-id': employee_id, 'emotion-data': updated_emotion_data}
 
-                db.collection("customer-satisfaction-data").document(store_id).collection("emotion_db").document(doc_id).set(data1)
-                datewise_doc_ref.set(data2)
+                db.collection("customer-satisfaction-data").document(store_id).collection("emotion_db").document(doc_id).set(data1, merge=True)
+                db.collection("customer-satisfaction-data").document(store_id).collection("emotion_db").document(doc_id).collection("datewise").document(date).set(data2)
 
-                print("posted data successfully into firestore")
+                print("Posted data successfully into Firestore")
                 tk.messagebox.showinfo("Success", "Saved Data into Db successfully!")
             except Exception as e:
-                tk.messagebox.showerror("Error", "An error occured while posting data to Firestore, please make sure the system is connected to Internet Connection")
-                print("An error occurred while posting to firestore - ", e)
-            
+                tk.messagebox.showerror("Error", "An error occurred while posting data to Firestore, please make sure the system is connected to Internet Connection")
+                print("An error occurred while posting to Firestore - ", e)
 
-        emotions_detected_list=[]
+    emotions_detected_list = []
+
 
 def update_datetime():
     now = datetime.datetime.now()
