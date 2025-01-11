@@ -10,8 +10,8 @@ a = Analysis(
     binaries=[],
     datas=[
         ('./sensorsprok-firebase-adminsdk-8lypo-862938d9d5.json', '.'),
-        ('./model/emotion_model.json', 'model'),
-        ('./model/emotion_model.h5', 'model'),
+        ('./models/emotion_model.json', 'model'),
+        ('./models/emotion_model.h5', 'model'),
         ('./haarcascades/haarcascade_frontalface_default.xml', 'haarcascades')
     ],
     hiddenimports=[],

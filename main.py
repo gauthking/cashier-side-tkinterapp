@@ -10,11 +10,10 @@ import numpy as np
 import firebase_admin
 from firebase_admin import firestore
 from firebase_admin import credentials
+import logging
 
 def resource_path(relative_path):
-    """ Get the absolute path to the resource, works for dev and for PyInstaller """
     try:
-        # PyInstaller creates a temp folder and stores the path in _MEIPASS
         base_path = sys._MEIPASS
     except Exception:
         base_path = os.path.abspath(".")
@@ -25,11 +24,13 @@ cred = credentials.Certificate(resource_path('sensorsprok-firebase-adminsdk-8lyp
 app = firebase_admin.initialize_app(cred)
 db = firestore.client()
 
-json_file = open(resource_path('model/emotion_model.json'), 'r')
+json_file = open(resource_path('models/emotion_model.json'), 'r')
 loaded_model_json = json_file.read()
 json_file.close()
 emotion_model = model_from_json(loaded_model_json)
-emotion_model.load_weights(resource_path("model/emotion_model.h5"))
+emotion_model.load_weights(resource_path("models/emotion_model.h5"))
+print("Loaded model from disk")
+
 print("Loaded model from disk")
 
 video_codec = cv2.VideoWriter_fourcc(*"XVID")
@@ -37,16 +38,18 @@ video_codec = cv2.VideoWriter_fourcc(*"XVID")
 cap = None
 out = None
 recording = False
-emotion_dict = {0: "Angry", 1: "Disgusted", 2: "Fearful",
-                3: "Happy", 4: "Neutral", 5: "Sad", 6: "Surprised"}
+emotion_dict = {0: "Angry", 1: "Disgusted", 2: "Concerned",
+                3: "Happy", 4: "Neutral", 5: "Unsatisfied", 6: "Surprised"}
 emotion_job = None
-emotions_detected_list = [] 
+emotions_detected_list = []
 employee_id = None
 customer_id = None
 customer_name = None
 customer_gender = None
 camera_var = None  
 store_id = None
+
+DETECTION_INTERVAL_MS = 100  
 
 def get_available_cameras():
     available_cameras = []
@@ -87,35 +90,98 @@ def start_camera():
 
     emotion_job = window.after(5, perform_emotion_detection)
 
+def process_emotions_for_server(emotions_list):
+    # """
+    # Process the emotions list to reduce neutral entries before sending to server.
+    # Uses surrounding emotions to replace some neutral entries intelligently.
+    # """
+    if not emotions_list:
+        return emotions_list
+        
+    processed_emotions = emotions_list.copy()
+    
+    # Find indices of all neutral emotions
+    neutral_indices = [i for i, emotion in enumerate(processed_emotions) if emotion == "Neutral"]
+    
+    for idx in neutral_indices:
+        # Get emotions before and after the neutral emotion
+        prev_emotion = processed_emotions[idx - 1] if idx > 0 else None
+        next_emotion = processed_emotions[idx + 1] if idx < len(processed_emotions) - 1 else None
+        
+        # If we have both previous and next emotions and they're the same
+        if prev_emotion and next_emotion and prev_emotion == next_emotion and prev_emotion != "Neutral":
+            processed_emotions[idx] = prev_emotion
+            continue
+            
+        # If we have three consecutive neutrals, keep only the middle one
+        if (idx > 0 and idx < len(processed_emotions) - 1 and
+            processed_emotions[idx - 1] == "Neutral" and 
+            processed_emotions[idx + 1] == "Neutral"):
+            # Replace first and last neutral with nearby non-neutral emotions if available
+            for search_idx in range(idx - 2, -1, -1):
+                if processed_emotions[search_idx] != "Neutral":
+                    processed_emotions[idx - 1] = processed_emotions[search_idx]
+                    break
+            for search_idx in range(idx + 2, len(processed_emotions)):
+                if processed_emotions[search_idx] != "Neutral":
+                    processed_emotions[idx + 1] = processed_emotions[search_idx]
+                    break
+                    
+        # If this is an isolated neutral between two different emotions
+        elif prev_emotion and next_emotion and prev_emotion != "Neutral" and next_emotion != "Neutral":
+            # Use the emotion that appears more frequently in the nearby context
+            context_before = processed_emotions[max(0, idx-3):idx]
+            context_after = processed_emotions[idx+1:min(len(processed_emotions), idx+4)]
+            
+            context_emotions = context_before + context_after
+            emotion_counts = {e: context_emotions.count(e) for e in set(context_emotions) if e != "Neutral"}
+            
+            if emotion_counts:
+                most_common = max(emotion_counts.items(), key=lambda x: x[1])[0]
+                processed_emotions[idx] = most_common
+    
+    return processed_emotions
+
 def perform_emotion_detection():
-    global cap, emotion_job, emotions, emotions_detected_list
+    global cap, emotion_job, emotions_detected_list
     if cap is not None:
         ret, frame = cap.read()
         if ret:
-            face_cascade_path = resource_path('haarcascades/haarcascade_frontalface_default.xml')
-            face_detector = cv2.CascadeClassifier(face_cascade_path)
-            gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            num_faces = face_detector.detectMultiScale(gray_frame, scaleFactor=1.3, minNeighbors=5)
-            for (x, y, w, h) in num_faces:
-                cv2.rectangle(frame, (x, y-50), (x+w, y+h+10), (0, 255, 0), 4)
-                roi_gray_frame = gray_frame[y:y + h, x:x + w]
-                cropped_img = np.expand_dims(np.expand_dims(cv2.resize(roi_gray_frame, (48, 48)), -1), 0)
-                
-                emotion_prediction = emotion_model.predict(cropped_img)
-                maxindex = int(np.argmax(emotion_prediction))
-                cv2.putText(frame, emotion_dict[maxindex], (x+5, y-20),
-                            cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2, cv2.LINE_AA)
-                print(emotion_dict[maxindex])
-                emotions_detected_list.append(emotion_dict[maxindex])
+            try:
+                face_cascade_path = resource_path('haarcascades/haarcascade_frontalface_default.xml')
+                face_detector = cv2.CascadeClassifier(face_cascade_path)
+                gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                faces = face_detector.detectMultiScale(gray_frame, scaleFactor=1.3, minNeighbors=5)
 
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            img = Image.fromarray(frame_rgb)
-            imgtk = ImageTk.PhotoImage(image=img)
-            camera.imgtk = imgtk
-            camera.config(image=imgtk)
-            if recording and out is not None:
-                out.write(frame)
-            emotion_job = window.after(5, perform_emotion_detection)
+                if len(faces) > 0:
+                    largest_face = max(faces, key=lambda f: f[2] * f[3])
+                    (x, y, w, h) = largest_face
+                    cv2.rectangle(frame, (x, y-50), (x+w, y+h+10), (0, 255, 0), 4)
+                    
+                    roi_gray_frame = gray_frame[y:y + h, x:x + w]
+                    cropped_img = np.expand_dims(np.expand_dims(cv2.resize(roi_gray_frame, (48, 48)), -1), 0)
+
+                    emotion_prediction = emotion_model.predict(cropped_img)
+                    maxindex = int(np.argmax(emotion_prediction))
+                    
+                    cv2.putText(frame, emotion_dict[maxindex], (x+5, y-20),
+                                cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2, cv2.LINE_AA)
+                    logging.info(f"Detected emotion: {emotion_dict[maxindex]}")
+                    emotions_detected_list.append(emotion_dict[maxindex])
+
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                img = Image.fromarray(frame_rgb)
+                imgtk = ImageTk.PhotoImage(image=img)
+                camera.imgtk = imgtk
+                camera.config(image=imgtk)
+                
+                if recording and out is not None:
+                    out.write(frame)
+
+                emotion_job = window.after(DETECTION_INTERVAL_MS, perform_emotion_detection)
+            except Exception as e:
+                logging.error("Error during emotion detection: %s", e)
+                stop_camera()
         else:
             stop_camera()
 
@@ -146,8 +212,6 @@ def stop_camera():
         if out is not None:
             out.release()
             out = None
-            # print("Recording saved:", filename)
-            # print("Saving file...")
         if emotion_job is not None:
             window.after_cancel(emotion_job)
             emotion_job = None
@@ -155,30 +219,47 @@ def stop_camera():
         cap = None
         camera.config(image='')
         print("Camera feed stopped")
-        print(emotions_detected_list)
+        print(f"Original emotions: {emotions_detected_list}")
         get_input_values()
         print(f"Customer ID: {customer_id}")
         if len(emotions_detected_list) != 0:
             try:
+                # Process emotions before sending to server
+                processed_emotions = process_emotions_for_server(emotions_detected_list)
+                print(f"Processed emotions: {processed_emotions}")
+
                 date = get_date()
                 doc_id = customer_id + "_emotionData"
 
                 doc_ref = db.collection("customer-satisfaction-data").document(store_id)
-                
+
                 dummy_data = {"initialized": True}
                 doc_ref.set(dummy_data)
 
                 datewise_doc_ref = doc_ref.collection("emotion_db").document(doc_id).collection("datewise").document(date)
                 datewise_doc = datewise_doc_ref.get()
 
+                updated_emotion_data = []
+                cashier_data_array = []
+
                 if datewise_doc.exists:
                     existing_data = datewise_doc.to_dict()
-                    updated_emotion_data = existing_data.get('emotion-data', []) + emotions_detected_list
-                else:
-                    updated_emotion_data = emotions_detected_list
+                    updated_emotion_data = existing_data.get('emotion-data', [])
+
+                    # Get existing cashier data or initialize as empty
+                    cashier_data_array = existing_data.get('cashier-id', [])
+                    if not isinstance(cashier_data_array, list):
+                        cashier_data_array = []
+
+                # Append the new cashier ID and timestamp
+                timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                cashier_data_array.append({"cashier_id": employee_id, "timestamp": timestamp})
+
+                # Merge new emotion data
+                updated_emotion_data.extend(processed_emotions)
 
                 data1 = {"customer-id": customer_id, "customer-name": customer_name, "customer-gender": customer_gender}
-                data2 = {'cashier-id': employee_id, 'emotion-data': updated_emotion_data}
+                data2 = {'cashier-id': cashier_data_array, 'emotion-data': updated_emotion_data}
 
                 db.collection("customer-satisfaction-data").document(store_id).collection("emotion_db").document(doc_id).set(data1, merge=True)
                 db.collection("customer-satisfaction-data").document(store_id).collection("emotion_db").document(doc_id).collection("datewise").document(date).set(data2)
@@ -276,7 +357,6 @@ def show_main_window():
     datetime_label.grid(row=0, column=1, padx=10, pady=10, sticky="ne")
     update_datetime()
 
-    # Camera selection option
     available_cameras = get_available_cameras()
     camera_var_label = tk.Label(
         left_container, text="Camera Select:", font=("Helvetica", 14))
